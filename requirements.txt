@@ -4,6 +4,7 @@
 
 # Rally core dependencies
 alembic>=0.8.4,<=0.8.8                                 # MIT
+ansible>=2.1.1.0
 decorator>=3.4.0,<=4.0.10                              # new BSD License
 Jinja2==2.8                                            # BSD
 jsonschema>=2.0.0,!=2.5.0,<3.0.0                       # MIT

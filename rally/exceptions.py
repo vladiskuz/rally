@@ -260,3 +260,8 @@ class InvalidConnectionString(RallyException):
 
 class DowngradeNotSupported(RallyException):
     msg_fmt = _("Database schema downgrade is not supported.")
+
+
+class AnsibleException(RallyException):
+    msg_fmt = _("Something going wrong with Ansible execution "
+                "on hosts: %(message)s")
