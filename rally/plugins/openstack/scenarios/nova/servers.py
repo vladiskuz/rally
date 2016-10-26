@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import threading
+
 import jsonschema
 
 from rally.common import logging
@@ -560,12 +562,14 @@ class ShelveAndUnshelveServer(utils.NovaScenario,
 @validation.image_valid_on_flavor("flavor", "image")
 @validation.required_services(consts.Service.NOVA)
 @validation.required_openstack(admin=True, users=True)
-@scenario.configure(context={"cleanup": ["nova"]},
-                    name="NovaServers.boot_and_live_migrate_server")
-class BootAndLiveMigrateServer(utils.NovaScenario,
+@scenario.configure(
+    context={"cleanup": ["nova"]},
+    name="NovaServers.boot_and_live_migrate_server")
+class BootAndLiveMigrateServer(utils.NovaLiveMigration,
                                cinder_utils.CinderScenario):
 
-    def run(self, image, flavor, block_migration=False, disk_over_commit=False,
+    def run(self, image, flavor, with_migration_monitor=False,
+            block_migration=False, disk_over_commit=False,
             min_sleep=0, max_sleep=0, **kwargs):
         """Live Migrate a server.
 
@@ -579,6 +583,8 @@ class BootAndLiveMigrateServer(utils.NovaScenario,
 
         :param image: image to be used to boot an instance
         :param flavor: flavor to be used to boot an instance
+        :param with_migration_monitor: Run live migration with
+                                         or without migration monitor
         :param block_migration: Specifies the migration type
         :param disk_over_commit: Specifies whether to allow overcommit
                                  on migrated instance or not
@@ -586,7 +592,28 @@ class BootAndLiveMigrateServer(utils.NovaScenario,
         :param max_sleep: Maximum sleep time in seconds (non-negative)
         :param kwargs: Optional additional arguments for server creation
         """
+
         server = self._boot_server(image, flavor, **kwargs)
+
+        if with_migration_monitor:
+            event = threading.Event()
+            event.clear()
+
+            server_admin = self.admin_clients("nova").servers.get(server.id)
+            instance_name = getattr(
+                server_admin,
+                "OS-EXT-SRV-ATTR:instance_name")
+            instance_name = instance_name.encode("utf-8")
+
+            migration_logger = threading.Thread(
+                target=self._receive_and_write_message,
+                args=(instance_name, event,))
+            migration_logger.daemon = True
+            migration_logger.start()
+
+            # waiting zmq socket initialization
+            event.wait()
+
         self.sleep_between(min_sleep, max_sleep)
 
         new_host = self._find_host_to_migrate(server)
@@ -594,6 +621,9 @@ class BootAndLiveMigrateServer(utils.NovaScenario,
                            block_migration, disk_over_commit)
 
         self._delete_server(server)
+
+        if with_migration_monitor:
+            migration_logger.join()
 
 
 @types.convert(image={"type": "glance_image"},

@@ -12,10 +12,12 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-
+import json
 import random
+import time
 
 from oslo_config import cfg
+import zmq
 
 from rally import exceptions
 from rally.plugins.openstack import scenario
@@ -1248,3 +1250,92 @@ class NovaScenario(scenario.OpenStackScenario):
         """
         return self.admin_clients("nova").aggregates.remove_host(aggregate,
                                                                  host)
+
+
+class NovaLiveMigration(NovaScenario):
+    """Base class for nova live migration scenario."""
+
+    def _receive_and_write_message(self, instance_name, event):
+        """Receive data from ZMQ and write it to database
+
+        :param instance_name: The name of instance that will be live migrated
+        :param event: Threading event using for sync threads
+        """
+        zmq_socket = self._init_zmq_socket(instance_name)
+
+        try:
+            self._recv_and_write(zmq_socket, event)
+        finally:
+            if not zmq_socket.closed:
+                zmq_socket.close()
+
+    def _init_zmq_socket(self, instance_name):
+        zmq_context = self.context["zmq_context"]
+        zmq_socket = zmq_context.socket(zmq.SUB)
+
+        port = self.context["zmq_pub_port"]
+        for ip_addr in self.context["hosts_ip"]:
+            zmq_socket.connect("tcp://%s:%s" % (ip_addr, port))
+
+        zmq_socket.setsockopt(zmq.SUBSCRIBE, instance_name)
+
+        return zmq_socket
+
+    def _recv_and_write(self, zmq_socket, event):
+        start_time = 0
+        start_migration = True
+
+        events_complete_table = {
+            "cols": ["domain_name",
+                     "domain_id",
+                     "time",
+                     "measurement",
+                     "event",
+                     "event_details",
+                     "value"],
+            "rows": []}
+
+        event.set()
+
+        while True:
+            [instance_name, json_data] = zmq_socket.recv_multipart()
+            data = json.loads(json_data)
+
+            if data["measurement"] == "events":
+                events_complete_table["rows"].append([
+                    data["tags"]["domain_name"],
+                    data["tags"]["domain_id"],
+                    time.ctime(data["time"]),
+                    data["measurement"],
+                    data["tags"]["event"],
+                    data["tags"]["event_detail"],
+                    data["fields"]["value"]])
+
+                if data["fields"]["value"] == 1 and start_migration:
+                    start_time = float(data["time"])
+                    start_migration = False
+                elif data["fields"]["value"] == 1 and not start_migration:
+                    end_time = float(data["time"])
+                    duration = round(end_time - start_time, 2)
+
+                    self.add_output(additive={
+                        "title": "Migration time for each instance "
+                                 "(from libvirt)",
+                        "description": "Time spent on migration in seconds",
+                        "chart_plugin": "Pie",
+                        "data": [[data["tags"]["domain_name"], duration]]})
+
+                    self.add_output(additive={
+                        "title": "Migration time for each iteration "
+                                 "(from libvirt)",
+                        "chart_plugin": "Lines",
+                        "data": [["Migration time", duration]],
+                        "label": "Measure this in seconds"})
+
+                    self.add_output(complete={
+                        "title": "Libvirt events details",
+                        "description": "Detail about events from libvirt",
+                        "chart_plugin": "Table",
+                        "data": events_complete_table})
+
+                    break

@@ -6,6 +6,7 @@
         name: "{{flavor_name}}"
       image:
         name: "^cirros.*uec$"
+      with_migration_monitor: false
       block_migration: false
     runner:
       type: "constant"
